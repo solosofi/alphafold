@@ -59,35 +59,68 @@ def make_msa_features(msas: Sequence[parsers.Msa]) -> FeatureDict:
   if not msas:
     raise ValueError('At least one MSA must be provided.')
 
-  int_msa = []
-  deletion_matrix = []
-  species_ids = []
+  # Determine dimensions for pre-allocation
+  if not msas[0].sequences:
+      raise ValueError('MSA must contain at least one sequence.')
+  
+  num_res = len(msas[0].sequences[0])
+  total_seqs = sum(len(msa.sequences) for msa in msas)
+
+  # Pre-allocate arrays to avoid list growth overhead (memory and CPU)
+  # Use uint8 for MSA to save memory (22 classes fit in 8 bits)
+  int_msa = np.zeros((total_seqs, num_res), dtype=np.uint8)
+  deletion_matrix_int = np.zeros((total_seqs, num_res), dtype=np.int32)
+  species_ids = [None] * total_seqs
+
+  # Create translation table for fast mapping
+  aa_map = np.full(256, 20, dtype=np.uint8) # Default to 20 ('X')
+  for aa, code in residue_constants.HHBLITS_AA_TO_ID.items():
+      aa_map[ord(aa)] = code
+
   seen_sequences = set()
+  row_idx = 0
+
   for msa_index, msa in enumerate(msas):
     if not msa:
       raise ValueError(f'MSA {msa_index} must contain at least one sequence.')
+    
     for sequence_index, sequence in enumerate(msa.sequences):
       if sequence in seen_sequences:
         continue
       seen_sequences.add(sequence)
-      int_msa.append(
-          [residue_constants.HHBLITS_AA_TO_ID[res] for res in sequence]
-      )
-      deletion_matrix.append(msa.deletion_matrix[sequence_index])
+      
+      # Fast numpy mapping from string/bytes to int codes
+      # 'latin-1' encoding allows 1:1 mapping of bytes to chars
+      b_seq = sequence.encode('latin-1')
+      seq_arr = np.frombuffer(b_seq, dtype=np.uint8)
+      
+      int_msa[row_idx] = aa_map[seq_arr]
+      
+      # Copy deletion matrix row
+      # Assuming deletion_matrix is already a numpy array or list of ints
+      deletion_matrix_int[row_idx] = msa.deletion_matrix[sequence_index]
+      
       identifiers = msa_identifiers.get_identifiers(
           msa.descriptions[sequence_index]
       )
-      species_ids.append(identifiers.species_id.encode('utf-8'))
+      species_ids[row_idx] = identifiers.species_id.encode('utf-8')
+      
+      row_idx += 1
 
-  num_res = len(msas[0].sequences[0])
-  num_alignments = len(int_msa)
+  # Truncate to actual unique sequences
+  int_msa = int_msa[:row_idx]
+  deletion_matrix_int = deletion_matrix_int[:row_idx]
+  species_ids_arr = np.array(species_ids[:row_idx], dtype=np.object_)
+  
+  num_alignments = np.full((num_res,), row_idx, dtype=np.int32)
+  
   features = {}
-  features['deletion_matrix_int'] = np.array(deletion_matrix, dtype=np.int32)
-  features['msa'] = np.array(int_msa, dtype=np.int32)
-  features['num_alignments'] = np.array(
-      [num_alignments] * num_res, dtype=np.int32
-  )
-  features['msa_species_identifiers'] = np.array(species_ids, dtype=np.object_)
+  # Cast back to int32 for compatibility with model expectations, 
+  # though intermediate storage was optimized.
+  features['deletion_matrix_int'] = deletion_matrix_int
+  features['msa'] = int_msa.astype(np.int32)
+  features['num_alignments'] = num_alignments
+  features['msa_species_identifiers'] = species_ids_arr
   return features
 
 
