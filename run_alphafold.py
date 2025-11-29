@@ -168,7 +168,8 @@ flags.DEFINE_enum(
 flags.DEFINE_enum(
     'model_preset',
     'monomer',
-    ['monomer', 'monomer_casp14', 'monomer_ptm', 'multimer'],
+    ['monomer', 'monomer_casp14', 'monomer_ptm', 'multimer',
+     'monomer_ptm_fast'],
     'Choose preset model configuration - the monomer model, '
     'the monomer model with extra ensembling, monomer model with '
     'pTM head, or multimer model',
@@ -667,9 +668,22 @@ def main(argv):
     data_pipeline = monomer_data_pipeline
 
   model_runners = {}
-  model_names = config.MODEL_PRESETS[FLAGS.model_preset]
+  
+  # Map new fast presets to standard model weights names
+  preset = FLAGS.model_preset
+  if preset == 'monomer_ptm_fast':
+      model_names = config.MODEL_PRESETS['monomer_ptm'] # Uses standard PTM weights
+  else:
+      model_names = config.MODEL_PRESETS[preset]
+
   for model_name in model_names:
-    model_config = config.model_config(model_name)
+    # Construct the config name based on preset
+    if preset == 'monomer_ptm_fast':
+        config_name = f'{model_name}_fast'
+    else:
+        config_name = model_name
+        
+    model_config = config.model_config(config_name)
     if run_multimer_system:
       model_config.model.num_ensemble_eval = num_ensemble
     else:
