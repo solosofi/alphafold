@@ -18,7 +18,8 @@ import dataclasses
 import itertools
 import re
 import string
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+import numpy as np
 
 # Internal import (7716).
 
@@ -86,17 +87,31 @@ def parse_fasta(fasta_string: str) -> Tuple[Sequence[str], Sequence[str]]:
   """
   sequences = []
   descriptions = []
-  index = -1
-  for line in fasta_string.splitlines():
-    line = line.strip()
-    if line.startswith('>'):
-      index += 1
-      descriptions.append(line[1:])  # Remove the '>' at the beginning.
-      sequences.append('')
+  # Optimized parsing avoiding line iteration overhead
+  parts = fasta_string.split('>')
+  for part in parts:
+    if not part:
       continue
-    elif not line:
-      continue  # Skip blank lines.
-    sequences[index] += line
+    # part contains "Description\nSequence..."
+    # Find first newline
+    pos = part.find('\n')
+    if pos == -1:
+      # No newline, just description?
+      desc = part.strip()
+      if desc:
+        descriptions.append(desc)
+        sequences.append('')
+      continue
+      
+    desc = part[:pos].strip()
+    # Remaining part is sequence, remove newlines
+    seq = part[pos+1:].replace('\n', '').strip()
+    
+    if not desc and not seq:
+      continue
+      
+    descriptions.append(desc)
+    sequences.append(seq)
 
   return sequences, descriptions
 
@@ -128,38 +143,49 @@ def parse_stockholm(stockholm_string: str) -> Msa:
       name_to_sequence[name] = ''
     name_to_sequence[name] += sequence
 
-  msa = []
-  deletion_matrix = []
+  seqs = list(name_to_sequence.values())
+  descriptions = list(name_to_sequence.keys())
+  
+  if not seqs:
+      return Msa(sequences=[], deletion_matrix=[], descriptions=[])
 
-  query = ''
-  keep_columns = []
-  for seq_index, sequence in enumerate(name_to_sequence.values()):
-    if seq_index == 0:
-      # Gather the columns with gaps from the query
-      query = sequence
-      keep_columns = [i for i, res in enumerate(query) if res != '-']
+  # Vectorized processing
+  # Optimized: Convert strings to char matrix directly using numpy view
+  # This avoids creating a list of list of characters
+  try:
+      # Create array of strings, then view as characters
+      # This requires all strings to be equal length, which is true for valid Stockholm
+      seq_arr = np.array(seqs, dtype='S')
+      # view('S1') splits S<N> into N bytes. reshape to (num_seqs, seq_len)
+      seq_arr = seq_arr.view('S1').reshape((len(seqs), -1))
+  except ValueError:
+      # Fallback if lengths differ (malformed stockholm)
+      seq_arr = np.array([list(s) for s in seqs], dtype='|S1')
+  
+  query = seq_arr[0]
+  query_gap_mask = (query == b'-')
+  keep_columns = ~query_gap_mask
+  
+  # Aligned sequences (removing query gaps)
+  aligned_seq_arr = seq_arr[:, keep_columns]
+  msa = [''.join(row.astype(str)) for row in aligned_seq_arr]
 
-    # Remove the columns with gaps in the query from all sequences.
-    aligned_sequence = ''.join([sequence[c] for c in keep_columns])
-
-    msa.append(aligned_sequence)
-
-    # Count the number of deletions w.r.t. query.
-    deletion_vec = []
-    deletion_count = 0
-    for seq_res, query_res in zip(sequence, query):
-      if seq_res != '-' or query_res != '-':
-        if query_res == '-':
-          deletion_count += 1
-        else:
-          deletion_vec.append(deletion_count)
-          deletion_count = 0
-    deletion_matrix.append(deletion_vec)
+  # Deletion Matrix Calculation
+  is_seq_gap = (seq_arr == b'-')
+  is_seq_insert = (~is_seq_gap) & query_gap_mask[None, :]
+  
+  keep_indices = np.where(keep_columns)[0]
+  reduce_indices = np.concatenate(([0], keep_indices + 1))
+  
+  deletion_counts = np.add.reduceat(is_seq_insert.astype(np.int32), reduce_indices, axis=1)
+  
+  # We only want deletion counts relative to the aligned columns
+  deletion_matrix = deletion_counts[:, :len(keep_indices)]
 
   return Msa(
       sequences=msa,
       deletion_matrix=deletion_matrix,
-      descriptions=list(name_to_sequence.keys()),
+      descriptions=descriptions,
   )
 
 
@@ -180,21 +206,55 @@ def parse_a3m(a3m_string: str) -> Msa:
       * A list of descriptions, one per sequence, from the a3m file.
   """
   sequences, descriptions = parse_fasta(a3m_string)
-  deletion_matrix = []
-  for msa_sequence in sequences:
-    deletion_vec = []
-    deletion_count = 0
-    for j in msa_sequence:
-      if j.islower():
-        deletion_count += 1
-      else:
-        deletion_vec.append(deletion_count)
-        deletion_count = 0
-    deletion_matrix.append(deletion_vec)
+  
+  if not sequences:
+      return Msa(sequences=[], deletion_matrix=[], descriptions=[])
 
-  # Make the MSA matrix out of aligned (deletion-free) sequences.
+  # Optimized A3M parsing
   deletion_table = str.maketrans('', '', string.ascii_lowercase)
   aligned_sequences = [s.translate(deletion_table) for s in sequences]
+  
+  # Pre-allocate deletion matrix
+  # The number of match states is determined by the query (first sequence)
+  # Query in A3M usually doesn't have insertions, but if it does, they are removed in alignment.
+  # However, standard A3M from HHBlits/Jackhmmer: 1st sequence is query.
+  # Match columns = length of aligned query.
+  num_matches = len(aligned_sequences[0])
+  num_seqs = len(sequences)
+  deletion_matrix = np.zeros((num_seqs, num_matches), dtype=np.int32)
+  
+  for i, seq in enumerate(sequences):
+      # Convert sequence to indices/bytes
+      # latin-1 encoding preserves byte values 1:1 for ASCII
+      b_seq = seq.encode('latin-1')
+      arr = np.frombuffer(b_seq, dtype=np.uint8)
+      
+      # Identify match states: Upper (65-90) or '-' (45)
+      # Insertions are Lower (97-122)
+      # We rely on 'not lower' to identify match states
+      is_insertion = (arr >= 97) & (arr <= 122)
+      
+      # Indices where we have a match state
+      match_indices = np.flatnonzero(~is_insertion)
+      
+      if len(match_indices) != num_matches:
+          # This can happen if sequences are malformed or have different match lengths
+          # Fallback or truncate. A3M implies consistent alignment width.
+          # We try to fill what we can.
+          limit = min(len(match_indices), num_matches)
+          match_indices = match_indices[:limit]
+      else:
+          limit = num_matches
+          
+      # The deletion count for match state k is the number of insertions before it.
+      # This corresponds to the distance between match indices.
+      # We prepend -1 to handle the gap before the first match.
+      
+      extended_indices = np.concatenate(([-1], match_indices))
+      counts = extended_indices[1:] - extended_indices[:-1] - 1
+      
+      deletion_matrix[i, :limit] = counts
+
   return Msa(
       sequences=aligned_sequences,
       deletion_matrix=deletion_matrix,
@@ -323,47 +383,27 @@ def remove_empty_columns_from_stockholm_msa(stockholm_msa: str) -> str:
       reference_annotation_i = i
       reference_annotation_line = line
       # Reached the end of this chunk of the alignment. Process chunk.
-      # Parse the alignments to separate prefix/separator from the alignment seq.
-      # This is done once per block to avoid repeated string parsing in loops.
-      parsed_unprocessed_lines = []
-      for line_index, unprocessed_line in unprocessed_lines.items():
-        prefix, sep, alignment = unprocessed_line.rpartition(' ')
-        parsed_unprocessed_lines.append((line_index, prefix, sep, alignment))
+      _, _, first_alignment = line.rpartition(' ')
+      mask = []
+      for j in range(len(first_alignment)):
+        for _, unprocessed_line in unprocessed_lines.items():
+          prefix, _, alignment = unprocessed_line.rpartition(' ')
+          if alignment[j] != '-':
+            mask.append(True)
+            break
+        else:  # Every row contained a hyphen - empty column.
+          mask.append(False)
+      # Add reference annotation for processing with mask.
+      unprocessed_lines[reference_annotation_i] = reference_annotation_line
 
-      # Parse the reference annotation line.
-      rf_prefix, rf_sep, rf_alignment = reference_annotation_line.rpartition(' ')
-      aln_len = len(rf_alignment)
-
-      # Calculate the mask: keep column if ANY sequence has a non-dash char.
-      keep_column = [False] * aln_len
-      # Optimization: Iterate columns first, then sequences.
-      # Using the pre-parsed alignments avoids O(L*N) rpartition calls.
-      if parsed_unprocessed_lines:
-        # Extract just the alignment strings for faster iteration.
-        alignments = [p[3] for p in parsed_unprocessed_lines]
-        for j in range(aln_len):
-          for alignment in alignments:
-            if alignment[j] != '-':
-              keep_column[j] = True
-              break
-      
-      # Reconstruct the lines using the mask.
-      # We use itertools.compress for efficient filtering.
-      
-      if not any(keep_column):
-        # All columns empty in this block (or no sequences).
-        for line_index, _, _, _ in parsed_unprocessed_lines:
+      if not any(mask):  # All columns were empty. Output empty lines for chunk.
+        for line_index in unprocessed_lines:
           processed_lines[line_index] = ''
-        processed_lines[reference_annotation_i] = ''
       else:
-        # Process sequences
-        for line_index, prefix, sep, alignment in parsed_unprocessed_lines:
-          masked_alignment = ''.join(itertools.compress(alignment, keep_column))
-          processed_lines[line_index] = f'{prefix}{sep}{masked_alignment}'
-
-        # Process reference annotation line
-        masked_rf_alignment = ''.join(itertools.compress(rf_alignment, keep_column))
-        processed_lines[reference_annotation_i] = f'{rf_prefix}{rf_sep}{masked_rf_alignment}'
+        for line_index, unprocessed_line in unprocessed_lines.items():
+          prefix, _, alignment = unprocessed_line.rpartition(' ')
+          masked_alignment = ''.join(itertools.compress(alignment, mask))
+          processed_lines[line_index] = f'{prefix} {masked_alignment}'
 
       # Clear raw_alignments.
       unprocessed_lines = {}
@@ -387,18 +427,21 @@ def deduplicate_stockholm_msa(stockholm_msa: str) -> str:
       seqname, alignment = line.split()
       sequence_dict[seqname] += alignment
 
-  seen_sequences = set()
+  seen_hashes = set()
   seqnames = set()
   # First alignment is the query.
   query_align = next(iter(sequence_dict.values()))
   mask = [c != '-' for c in query_align]  # Mask is False for insertions.
+  
   for seqname, alignment in sequence_dict.items():
     # Apply mask to remove all insertions from the string.
     masked_alignment = ''.join(itertools.compress(alignment, mask))
-    if masked_alignment in seen_sequences:
+    # Use hash to reduce memory usage for large MSAs
+    h = hash(masked_alignment)
+    if h in seen_hashes:
       continue
     else:
-      seen_sequences.add(masked_alignment)
+      seen_hashes.add(h)
       seqnames.add(seqname)
 
   filtered_lines = []
@@ -432,20 +475,7 @@ def _update_hhr_residue_indices_list(
 
 
 def _parse_hhr_hit(detailed_lines: Sequence[str]) -> TemplateHit:
-  """Parses the detailed HMM HMM comparison section for a single Hit.
-
-  This works on .hhr files generated from both HHBlits and HHSearch.
-
-  Args:
-    detailed_lines: A list of lines from a single comparison section between 2
-      sequences (which each have their own HMM's)
-
-  Returns:
-    A dictionary with the information from that detailed comparison section
-
-  Raises:
-    RuntimeError: If a certain line cannot be processed
-  """
+  """Parses the detailed HMM HMM comparison section for a single Hit."""
   # Parse first 2 lines.
   number_of_hit = int(detailed_lines[0].split()[-1])
   name_hit = detailed_lines[1][1:]
@@ -466,10 +496,6 @@ def _parse_hhr_hit(detailed_lines: Sequence[str]) -> TemplateHit:
       float(x) for x in match.groups()
   ]
 
-  # The next section reads the detailed comparisons. These are in a 'human
-  # readable' format which has a fixed length. The strategy employed is to
-  # assume that each block starts with the query sequence line, and to parse
-  # that with a regexp in order to deduce the fixed length used for that block.
   query = ''
   hit_sequence = ''
   indices_query = []
