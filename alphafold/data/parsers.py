@@ -323,27 +323,47 @@ def remove_empty_columns_from_stockholm_msa(stockholm_msa: str) -> str:
       reference_annotation_i = i
       reference_annotation_line = line
       # Reached the end of this chunk of the alignment. Process chunk.
-      _, _, first_alignment = line.rpartition(' ')
-      mask = []
-      for j in range(len(first_alignment)):
-        for _, unprocessed_line in unprocessed_lines.items():
-          prefix, _, alignment = unprocessed_line.rpartition(' ')
-          if alignment[j] != '-':
-            mask.append(True)
-            break
-        else:  # Every row contained a hyphen - empty column.
-          mask.append(False)
-      # Add reference annotation for processing with mask.
-      unprocessed_lines[reference_annotation_i] = reference_annotation_line
+      # Parse the alignments to separate prefix/separator from the alignment seq.
+      # This is done once per block to avoid repeated string parsing in loops.
+      parsed_unprocessed_lines = []
+      for line_index, unprocessed_line in unprocessed_lines.items():
+        prefix, sep, alignment = unprocessed_line.rpartition(' ')
+        parsed_unprocessed_lines.append((line_index, prefix, sep, alignment))
 
-      if not any(mask):  # All columns were empty. Output empty lines for chunk.
-        for line_index in unprocessed_lines:
+      # Parse the reference annotation line.
+      rf_prefix, rf_sep, rf_alignment = reference_annotation_line.rpartition(' ')
+      aln_len = len(rf_alignment)
+
+      # Calculate the mask: keep column if ANY sequence has a non-dash char.
+      keep_column = [False] * aln_len
+      # Optimization: Iterate columns first, then sequences.
+      # Using the pre-parsed alignments avoids O(L*N) rpartition calls.
+      if parsed_unprocessed_lines:
+        # Extract just the alignment strings for faster iteration.
+        alignments = [p[3] for p in parsed_unprocessed_lines]
+        for j in range(aln_len):
+          for alignment in alignments:
+            if alignment[j] != '-':
+              keep_column[j] = True
+              break
+      
+      # Reconstruct the lines using the mask.
+      # We use itertools.compress for efficient filtering.
+      
+      if not any(keep_column):
+        # All columns empty in this block (or no sequences).
+        for line_index, _, _, _ in parsed_unprocessed_lines:
           processed_lines[line_index] = ''
+        processed_lines[reference_annotation_i] = ''
       else:
-        for line_index, unprocessed_line in unprocessed_lines.items():
-          prefix, _, alignment = unprocessed_line.rpartition(' ')
-          masked_alignment = ''.join(itertools.compress(alignment, mask))
-          processed_lines[line_index] = f'{prefix} {masked_alignment}'
+        # Process sequences
+        for line_index, prefix, sep, alignment in parsed_unprocessed_lines:
+          masked_alignment = ''.join(itertools.compress(alignment, keep_column))
+          processed_lines[line_index] = f'{prefix}{sep}{masked_alignment}'
+
+        # Process reference annotation line
+        masked_rf_alignment = ''.join(itertools.compress(rf_alignment, keep_column))
+        processed_lines[reference_annotation_i] = f'{rf_prefix}{rf_sep}{masked_rf_alignment}'
 
       # Clear raw_alignments.
       unprocessed_lines = {}
