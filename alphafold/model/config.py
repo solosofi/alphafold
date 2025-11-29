@@ -49,6 +49,13 @@ MODEL_PRESETS = {
         'model_4_multimer_v3',
         'model_5_multimer_v3',
     ),
+    'monomer_ptm_fast': (
+        'model_1_ptm_fast',
+        'model_2_ptm_fast',
+        'model_3_ptm_fast',
+        'model_4_ptm_fast',
+        'model_5_ptm_fast',
+    ),
 }
 MODEL_PRESETS['monomer_casp14'] = MODEL_PRESETS['monomer']
 
@@ -114,6 +121,49 @@ CONFIG_DIFFS = {
     },
     'model_5_multimer_v3': {
         'model.embeddings_and_evoformer.num_extra_msa': 1152
+    },
+    # CPU/Fast Optimized Presets
+    # Drastically reduce MSA sizes and recycling for speed and memory efficiency
+    'model_1_ptm_fast': {
+        'data.common.max_extra_msa': 256,
+        'data.eval.max_msa_clusters': 128,
+        'data.common.reduce_msa_clusters_by_max_templates': True,
+        'data.common.use_templates': False,  # Disable templates for speed
+        'model.embeddings_and_evoformer.template.enabled': False,
+        'model.heads.predicted_aligned_error.weight': 0.1,
+        'model.num_recycle': 1,
+        'model.global_config.subbatch_size': 4,
+    },
+    'model_2_ptm_fast': {
+        'data.common.max_extra_msa': 256,
+        'data.eval.max_msa_clusters': 128,
+        'data.common.reduce_msa_clusters_by_max_templates': True,
+        'data.common.use_templates': False,
+        'model.embeddings_and_evoformer.template.enabled': False,
+        'model.heads.predicted_aligned_error.weight': 0.1,
+        'model.num_recycle': 1,
+        'model.global_config.subbatch_size': 4,
+    },
+    'model_3_ptm_fast': {
+        'data.common.max_extra_msa': 256,
+        'data.eval.max_msa_clusters': 128,
+        'model.heads.predicted_aligned_error.weight': 0.1,
+        'model.num_recycle': 1,
+        'model.global_config.subbatch_size': 4,
+    },
+    'model_4_ptm_fast': {
+        'data.common.max_extra_msa': 256,
+        'data.eval.max_msa_clusters': 128,
+        'model.heads.predicted_aligned_error.weight': 0.1,
+        'model.num_recycle': 1,
+        'model.global_config.subbatch_size': 4,
+    },
+    'model_5_ptm_fast': {
+        'data.common.max_extra_msa': 256,
+        'data.eval.max_msa_clusters': 128,
+        'model.heads.predicted_aligned_error.weight': 0.1,
+        'model.num_recycle': 1,
+        'model.global_config.subbatch_size': 4,
     },
 }
 # Key differences between multimer v1/v2 and v3, mostly due to numerical
@@ -1107,6 +1157,28 @@ def _apply_model_4_multimer_v3_diff(cfg: AlphaFoldConfig) -> None:
 def _apply_model_5_multimer_v3_diff(cfg: AlphaFoldConfig) -> None:
   cfg.model.embeddings_and_evoformer.num_extra_msa = 1152
 
+# Optimized CPU/Fast Functions
+def _apply_model_1_ptm_fast_diff(cfg: AlphaFoldConfig) -> None:
+  if cfg.data:
+    cfg.data.common.max_extra_msa = 256
+    cfg.data.eval.max_msa_clusters = 128
+    cfg.data.common.use_templates = False
+  cfg.model.embeddings_and_evoformer.template.enabled = False
+  cfg.model.heads.predicted_aligned_error.weight = 0.1
+  cfg.model.num_recycle = 1
+  cfg.model.global_config.subbatch_size = 4
+
+def _apply_model_2_ptm_fast_diff(cfg: AlphaFoldConfig) -> None:
+  _apply_model_1_ptm_fast_diff(cfg)
+
+def _apply_model_3_ptm_fast_diff(cfg: AlphaFoldConfig) -> None:
+  _apply_model_1_ptm_fast_diff(cfg)
+
+def _apply_model_4_ptm_fast_diff(cfg: AlphaFoldConfig) -> None:
+  _apply_model_1_ptm_fast_diff(cfg)
+
+def _apply_model_5_ptm_fast_diff(cfg: AlphaFoldConfig) -> None:
+  _apply_model_1_ptm_fast_diff(cfg)
 
 def _common_updates(cfg: AlphaFoldConfig) -> None:
   """Applies common updates to the AlphaFold config."""
@@ -1142,6 +1214,11 @@ CONFIG_DIFF_OPS = {
     'model_3_multimer_v3': _apply_model_3_multimer_v3_diff,
     'model_4_multimer_v3': _apply_model_4_multimer_v3_diff,
     'model_5_multimer_v3': _apply_model_5_multimer_v3_diff,
+    'model_1_ptm_fast': _apply_model_1_ptm_fast_diff,
+    'model_2_ptm_fast': _apply_model_2_ptm_fast_diff,
+    'model_3_ptm_fast': _apply_model_3_ptm_fast_diff,
+    'model_4_ptm_fast': _apply_model_4_ptm_fast_diff,
+    'model_5_ptm_fast': _apply_model_5_ptm_fast_diff,
 }
 
 CONFIG_DIFF_OPS.update(
