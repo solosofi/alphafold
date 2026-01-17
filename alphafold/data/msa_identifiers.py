@@ -53,23 +53,23 @@ class Identifiers:
 
 
 def _parse_sequence_identifier(msa_sequence_identifier: str) -> Identifiers:
-  """Gets species from an msa sequence identifier.
-
-  The sequence identifier has the format specified by
-  _UNIPROT_TREMBL_ENTRY_NAME_PATTERN or _UNIPROT_SWISSPROT_ENTRY_NAME_PATTERN.
-  An example of a sequence identifier: `tr|A0A146SKV9|A0A146SKV9_FUNHE`
-
-  Args:
-    msa_sequence_identifier: a sequence identifier.
-
-  Returns:
-    An `Identifiers` instance with species_id. These
-    can be empty in the case where no identifier was found.
-  """
-  matches = re.search(_UNIPROT_PATTERN, msa_sequence_identifier.strip())
-  if matches:
-    return Identifiers(species_id=matches.group('SpeciesIdentifier'))
-  return Identifiers()
+    """Gets species from an msa sequence identifier using fast string splitting."""
+    # Optimization: Replaces regex with string splitting
+    # Format usually: >db|UniqueIdentifier|EntryName
+    identifier = msa_sequence_identifier.strip()
+    
+    if identifier.startswith('>'):
+        identifier = identifier[1:]
+        
+    parts = identifier.split('|')
+    if len(parts) >= 3:
+        # parts[1] is the UniProt Accession
+        # parts[2] is the Entry Name (e.g., A0A146SKV9_FUNHE)
+        entry_name_parts = parts[2].split('_')
+        if len(entry_name_parts) > 1:
+            return Identifiers(species_id=entry_name_parts[1])
+            
+    return Identifiers(species_id='')
 
 
 def _extract_sequence_identifier(description: str) -> Optional[str]:
