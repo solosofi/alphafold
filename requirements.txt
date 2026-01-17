@@ -9,3 +9,4 @@ numpy==1.24.3
 pytest<8.5.0
 setuptools<72.0.0
 tensorflow-cpu==2.16.1
+orjson
