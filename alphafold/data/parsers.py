@@ -74,47 +74,31 @@ class TemplateHit:
 
 
 def parse_fasta(fasta_string: str) -> Tuple[Sequence[str], Sequence[str]]:
-  """Parses FASTA string and returns list of strings with amino-acid sequences.
-
-  Arguments:
-    fasta_string: The string contents of a FASTA file.
-
-  Returns:
-    A tuple of two lists:
-    * A list of sequences.
-    * A list of sequence descriptions taken from the comment lines. In the
-      same order as the sequences.
-  """
-  sequences = []
-  descriptions = []
-  # Optimized parsing avoiding line iteration overhead
-  parts = fasta_string.split('>')
-  for part in parts:
-    if not part:
-      continue
-    # part contains "Description\nSequence..."
-    # Find first newline
-    pos = part.find('\n')
-    if pos == -1:
-      # No newline, just description?
-      desc = part.strip()
-      if desc:
-        descriptions.append(desc)
-        sequences.append('')
-      continue
-      
-    desc = part[:pos].strip()
-    # Remaining part is sequence, remove newlines
-    seq = part[pos+1:].replace('\n', '').strip()
+    """Parses FASTA string using index scanning to avoid high memory usage."""
+    sequences = []
+    descriptions = []
+    index = fasta_string.find('>')
+    if index == -1:
+        return sequences, descriptions
     
-    if not desc and not seq:
-      continue
-      
-    descriptions.append(desc)
-    sequences.append(seq)
+    # Scan string for next '>' without splitting everything at once
+    while index != -1:
+        next_index = fasta_string.find('>', index + 1)
+        if next_index == -1:
+            header_end = fasta_string.find('\n', index)
+            if header_end != -1:
+                descriptions.append(fasta_string[index + 1:header_end].strip())
+                sequences.append(fasta_string[header_end + 1:].replace('\n', ''))
+            break
+            
+        header_end = fasta_string.find('\n', index)
+        if header_end != -1 and header_end < next_index:
+            descriptions.append(fasta_string[index + 1:header_end].strip())
+            sequences.append(fasta_string[header_end + 1:next_index].replace('\n', ''))
+            
+        index = next_index
 
-  return sequences, descriptions
-
+    return sequences, descriptions
 
 def parse_stockholm(stockholm_string: str) -> Msa:
   """Parses sequences and deletion matrix from stockholm format alignment.
