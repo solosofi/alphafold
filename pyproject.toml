@@ -64,3 +64,19 @@ version = {attr = "alphafold.version.__version__"}
 
 [tool.setuptools]
 py-modules = ["run_alphafold"]
+
+[tool.pyink]
+line-length = 80
+unstable = true
+target-version = []
+pyink-indentation = 2
+pyink-use-majority-quotes = true
+pyink-annotation-pragmas = [
+    "noqa",
+    "pylint:",
+    "type: ignore",
+    "pytype:",
+    "mypy:",
+    "pyright:",
+    "pyre-",
+]
